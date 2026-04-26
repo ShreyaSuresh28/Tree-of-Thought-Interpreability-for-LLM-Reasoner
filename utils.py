@@ -1,122 +1,183 @@
 """
-Utility functions for the Tree-of-Thought framework.
-Provides helper functions for text processing, tokenization, and common operations.
+Advanced utility functions for Tree-of-Thought framework.
+Includes tokenization, chunking, text cleaning, and semantic helpers.
 """
 
 import tiktoken
-from typing import List, Dict, Any
+from typing import List
 import re
+import numpy as np
 
+
+# =========================
+# TOKEN COUNTING
+# =========================
 def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
-    """
-    Count the number of tokens in a text string.
-    
-    Args:
-        text: Input text to count tokens for
-        model: Model name for tokenization (default: gpt-3.5-turbo)
-    
-    Returns:
-        Number of tokens in the text
-    """
     try:
         encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
+    except:
         encoding = tiktoken.get_encoding("cl100k_base")
-    
+
     return len(encoding.encode(text))
 
-def chunk_text_by_tokens(text: str, max_tokens: int = 800, overlap: int = 100) -> List[str]:
+
+# =========================
+# SMART CHUNKING 🔥
+# =========================
+def chunk_text_by_tokens(text: str, max_tokens: int = 500, overlap: int = 100) -> List[str]:
     """
-    Split text into chunks based on token count with overlap.
-    
-    Args:
-        text: Input text to chunk
-        max_tokens: Maximum tokens per chunk
-        overlap: Number of tokens to overlap between chunks
-    
-    Returns:
-        List of text chunks
+    Chunk text with sentence awareness (better than raw token split).
     """
+
     if not text:
         return []
-    
-    encoding = tiktoken.get_encoding("cl100k_base")
-    tokens = encoding.encode(text)
-    
+
+    # Split into sentences first (IMPORTANT)
+    sentences = re.split(r'(?<=[.!?]) +', text)
+
     chunks = []
-    start = 0
-    
-    while start < len(tokens):
-        end = min(start + max_tokens, len(tokens))
-        chunk_tokens = tokens[start:end]
-        chunk_text = encoding.decode(chunk_tokens)
-        chunks.append(chunk_text)
-        
-        # Move start position for overlap
-        start += max_tokens - overlap
-    
+    current_chunk = ""
+    current_tokens = 0
+
+    for sentence in sentences:
+        sentence_tokens = count_tokens(sentence)
+
+        if current_tokens + sentence_tokens > max_tokens:
+            chunks.append(current_chunk.strip())
+
+            # overlap handling
+            overlap_text = current_chunk[-overlap:] if overlap < len(current_chunk) else current_chunk
+            current_chunk = overlap_text + " " + sentence
+            current_tokens = count_tokens(current_chunk)
+        else:
+            current_chunk += " " + sentence
+            current_tokens += sentence_tokens
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
     return chunks
 
+
+# =========================
+# TEXT CLEANING 🔥
+# =========================
 def clean_text(text: str) -> str:
     """
-    Clean and normalize text.
-    
-    Args:
-        text: Input text to clean
-    
-    Returns:
-        Cleaned text
+    Clean text but preserve structure for LLM.
     """
-    # Remove extra whitespace
-    text = re.sub(r'\s+', ' ', text)
-    # Remove special characters but keep punctuation
-    text = re.sub(r'[^\w\s\.\,\!\?\-\']', '', text)
+
+    if not text:
+        return ""
+
+    # Remove weird characters but keep structure
+    text = re.sub(r'[^\w\s\.\,\!\?\-\:\;\(\)\n]', '', text)
+
+    # Normalize spaces but keep paragraphs
+    text = re.sub(r'\n+', '\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+
     return text.strip()
 
+
+# =========================
+# IMPROVED OVERLAP 🔥
+# =========================
 def calculate_overlap(text1: str, text2: str) -> float:
     """
-    Calculate word overlap between two texts.
-    
-    Args:
-        text1: First text
-        text2: Second text
-    
-    Returns:
-        Overlap score (0-1)
+    Improved semantic-like overlap using weighted scoring.
     """
-    words1 = set(text1.lower().split())
-    words2 = set(text2.lower().split())
-    
+
+    words1 = set(re.findall(r'\w+', text1.lower()))
+    words2 = set(re.findall(r'\w+', text2.lower()))
+
     if not words1 or not words2:
         return 0.0
-    
+
     intersection = words1.intersection(words2)
-    union = words1.union(words2)
-    
-    return len(intersection) / len(union)
 
+    precision = len(intersection) / len(words1)
+    recall = len(intersection) / len(words2)
+
+    if precision + recall == 0:
+        return 0.0
+
+    # F1-style score (better than Jaccard)
+    return 2 * (precision * recall) / (precision + recall)
+
+
+# =========================
+# KEYWORD EXTRACTION 🔥
+# =========================
+def extract_keywords(text: str, top_k: int = 10) -> List[str]:
+    """
+    Extract important words (simple but effective).
+    """
+
+    words = re.findall(r'\w+', text.lower())
+
+    stopwords = {
+        'the', 'is', 'in', 'and', 'to', 'of', 'a', 'for',
+        'on', 'with', 'as', 'by', 'an', 'be', 'this', 'that'
+    }
+
+    words = [w for w in words if w not in stopwords and len(w) > 3]
+
+    freq = {}
+    for w in words:
+        freq[w] = freq.get(w, 0) + 1
+
+    sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+
+    return [w[0] for w in sorted_words[:top_k]]
+
+
+# =========================
+# SCORE FORMAT
+# =========================
 def format_score(score: float) -> str:
-    """
-    Format score for display.
-    
-    Args:
-        score: Score to format (0-1)
-    
-    Returns:
-        Formatted percentage string
-    """
-    return f"{score * 100:.1f}%"
+    return f"{score * 100:.2f}%"
 
+
+# =========================
+# QUERY VALIDATION 🔥
+# =========================
 def validate_query(query: str) -> bool:
     """
-    Validate user query.
-    
-    Args:
-        query: User query to validate
-    
-    Returns:
-        True if query is valid, False otherwise
+    Stronger validation for user queries.
     """
-    if not query or len(query.strip()) < 3:
+
+    if not query:
         return False
+
+    query = query.strip()
+
+    if len(query) < 5:
+        return False
+
+    # Must contain at least one meaningful word
+    if not re.search(r'\w+', query):
+        return False
+
     return True
+
+
+# =========================
+# NORMALIZE SCORES 🔥
+# =========================
+def normalize_scores(scores: List[float]) -> List[float]:
+    """
+    Normalize scores safely.
+    """
+
+    if not scores:
+        return []
+
+    arr = np.array(scores)
+
+    if arr.max() == arr.min():
+        return [0.5] * len(scores)
+
+    normalized = (arr - arr.min()) / (arr.max() - arr.min())
+
+    return normalized.tolist()
