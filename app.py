@@ -7,6 +7,9 @@ import streamlit as st
 import pandas as pd
 from typing import List, Dict, Any
 import plotly.graph_objects as go
+import cohere
+
+co = cohere.Client(st.secrets["COHERE_API_KEY"])
 
 # Import custom modules
 from rag_engine import RAGEngine
